@@ -3,6 +3,18 @@ package MoreListingFrameworkColumns::CMS;
 use strict;
 use warnings;
 use MT::Util qw( encode_html );
+use Scalar::Util qw( blessed );
+use Try::Tiny;
+
+use DDP { output => 'stderr', return => 'pass', caller_info => 1, deparse => 1};
+use CustomFields::Util; #DDP
+
+sub debug_fields {
+    my $field = shift;
+    return 0;
+    $field = blessed($field) ? $field->basename : $field||'';
+    return $field =~ m{(featured|has_video|related_link1)} ? 1 : 0;
+}
 
 # Update all of the listing framework screens to include filters that any user
 # has created, not just the filters the current user created.
@@ -38,6 +50,8 @@ sub cms_filtered_list_param {
 
 sub list_properties {
     my $app = MT->instance;
+
+    CustomFields::Util::load_meta_fields(); #DDP
 
     my $menu = {
         # Activity Log
@@ -506,47 +520,117 @@ sub list_properties {
         }
     };
 
-    my $iter = MT->model('field')->load_iter(
-        undef,
-        {
-            sort => 'name',
-        }
-    );
-    my $order = 10000;
+    my $iter     = MT->model('field')->load_iter( undef, { sort => 'name' } );
+    my $order    = 10000;
+    my $cf_types = $app->registry( 'customfield_types' );
+    my %blog_fields;
+    # my $spec   = "%-20s %-5s %-5s %-7s %s\n";
+    # printf STDERR $spec, "Field", "Show", 'App', 'Field', 'Field blogs';
     while ( my $field = $iter->() ) {
-        # Check that the field is an available custom field type. If not, there
-        # is no reason to add the field.
-        next if !$app->registry( 'customfield_types', $field->type );
+
+        # Skip field if custom field type is not defined/available
+        unless ( $cf_types->{$field->type} ) {
+            warn sprintf "Skipping '%s' field due to unknown type '%s'",
+                $field->basename, $field->type||'UNDEFINED';
+            next;
+        }
 
         my $cf_basename = 'field.' . $field->basename;
+        my $DEBUG       = debug_fields( $field );
 
+        # The condition code ref below needs to check the app blog ID against
+        # ALL blogs that have a particular field's basename defined. Since
+        # we're redefining each hash value, we have to capture each blog ID for
+        # comparison. Otherwise, only the blog in the last defined field would
+        # be used.
+        $blog_fields{$field->basename} ||= [];
+        push( $blog_fields{$field->basename}, $field->blog_id );
+
+        # Mapping from column def keywords to basic property types.
+        my %AUTO = (
+            string    => 'string',
+            smallint  => 'integer',
+            bigint    => 'integer',
+            boolean   => 'single_select',
+            datetime  => 'date',
+            timestamp => 'date',
+            integer   => 'integer',
+            text      => 'string',
+            float     => 'float',
+            ## TBD
+            # blob      => '',
+
+            ## Meta
+            vchar         => 'string',
+            vchar_idx     => 'string',
+            vinteger      => 'integer',
+            vinteger_idx  => 'integer',
+            vdatetime     => 'date',
+            vdatetime_idx => 'date',
+            vfloat        => 'float',
+            vfloat_idx    => 'float',
+            vclob         => 'string',
+            ## TBD
+            # vblob         => '',
+        );
+
+        # require MT::Meta;
+        my %meta;
+        my $id        = $cf_basename;
+        my $obj_type  = $field->obj_type;
+        my $obj_class = $app->model($obj_type);
+            my $def;
+        $meta{base} = '__virtual.integer' if $field->basename =~ m{featured};
+        # $meta{meta_col} = $cf_types->{$field->type}{column_def};
+        # $meta{is_meta} = 1;
+        # my $auto_type   = $AUTO{$meta{meta_col}}
+        #     or die MT->translate(
+        #     'Failed to initialize auto list property [_1].[_2]: unsupported column type.',
+        #     $obj_class, $id
+        #     );
+        $meta{col} = $field->basename;
+        # $meta{_base} = MT::ListProperty->instance( '__virtual', $auto_type );
+
+        # $menu->{ $field->obj_type }->{ $cf_basename } =
         $menu->{ $field->obj_type }->{ $field->basename } = {
+            %meta,
             label   => $field->name,
             display => 'optional',
             order   => $order++,
             condition => sub {
-                my ($prop) = shift;
+                my ( $prop ) = @_;
+                my $show     = 0;
+                my $blog_id  = $field->blog_id;
+                my @blogs    = @{ $blog_fields{$field->basename} };
+                my ( $app_blog, $is_website ) = try {
+                    my $a = $app->blog;
+                    ( $a->id, ( $a->class eq 'website' ? 1 : 0 ) );
+                };
 
-                # Show the field at the System Overview
-                return 1 if !$app->blog;
+                # Show the field if showing system overview (no app blog),
+                # OR it's a system-wide field (no field blog_id),
+                # OR the app blog is the same as any of the field's blogs
+                if (   !$app_blog || !$blog_id
+                    or grep { $app_blog == $_ } @blogs ) {
+                    $show = 1;
+                }
+                # OR if showing the website level of any of the field's blogs
+                elsif ( $is_website ) {
+                    my $Blog         = $app->model('blog');
+                    my $args         = { fetchonly => ['parent_id'] };
+                    my @parent_blogs = map {
+                            $Blog->load( { id => $_ }, $args )->parent_id
+                        } @blogs;
+                    $show = scalar grep { $app_blog == $_ } @parent_blogs;
+                }
 
-                # Show the field if the field is a system-wide field
-                return 1 if !$field->blog_id;
+                # debug_fields( $field )
+                #     and printf STDERR $spec,
+                #         $field->basename, ($show ? 'YES' : 'NO'),
+                #         $app_blog,        $field->blog_id, join(', ', @blogs );
 
-                # Show the field at the blog/website level
-                return 1 if
-                    $app->blog
-                    && $app->blog->id eq $field->blog_id;
+                return $show;
 
-                # Show the field at the website level if the field is in a
-                # child blog.
-                my $field_blog = $app->model('blog')->load( $field->blog_id );
-                return 1 if
-                    $app->blog
-                    && $app->blog->class eq 'website'
-                    && $field_blog->parent_id eq $app->blog->id;
-
-                return 0;
             },
             html    => sub {
                 my ( $prop, $obj, $app ) = @_;
@@ -564,6 +648,8 @@ sub list_properties {
                 my $option = $args->{option};
                 my $query  = $args->{string};
 
+                $DEBUG and say STDERR sprintf "#### RUNNING FILTER GREP ON FIELD %s: %s", $prop->{id}, np(%{{ option => $option, string => $query, objs => $objs, opts => $opts }});
+
                 my @result = grep {
                     filter_custom_field({
                         option => $option,
@@ -572,6 +658,7 @@ sub list_properties {
                     })
                 } @$objs;
 
+                $DEBUG and say STDERR scalar(@result)." results from grep filter: ".np(@result);
                 return @result;
             },
             # Make the column sortable
@@ -583,6 +670,12 @@ sub list_properties {
                 } @$objs;
             },
         };
+
+        # # DDP
+        if ( $DEBUG ) {
+            say STDERR sprintf '%s::list_properties: Adding list property for %s and %s field for blog_id %d: %s',
+            __PACKAGE__, $field->basename, $cf_basename, $field->blog_id, np($menu->{ $field->obj_type }->{ $field->basename });
+        }
     }
 
     return $menu;
@@ -628,21 +721,23 @@ sub filter_custom_field {
     my $query  = $arg_ref->{query};
     my $field  = $arg_ref->{field};
 
+    my $result;
     if ( 'equal' eq $option ) {
-        return $field =~ /^$query$/;
+        $result = $field =~ /^$query$/;
     }
     if ( 'contains' eq $option ) {
-        return $field =~ /$query/i;
+        $result =  $field =~ /$query/i;
     }
     elsif ( 'not_contains' eq $option ) {
-        return $field !~ /$query/i;
+        $result =  $field !~ /$query/i;
     }
     elsif ( 'beginning' eq $option ) {
-        return $field =~ /^$query/i;
+        $result =  $field =~ /^$query/i;
     }
     elsif ( 'end' eq $option ) {
-        return $field =~ /$query$/i;
+        $result =  $field =~ /$query$/i;
     }
+    say STDERR sprintf '##### filter_custom_field result: %s. %s', $result, np($arg_ref) if debug_fields($field);
 }
 
 # From MT::CMS::Filter
@@ -757,3 +852,46 @@ sub cf_name_field {
 1;
 
 __END__
+
+customfield_types
+Printing in line 111 of plugins/gWizMobile/t/40-endpoint-featured.t:
+[
+    [0]  "embed",
+    [1]  "entry",
+    [2]  "checkbox",
+    [3]  "reciprocal_entry",
+    [4]  "photo",
+    [5]  "file",
+    [6]  "reciprocal_page",
+    [7]  "selected_entries",
+    [8]  "url",
+    [9]  "post_type",
+    [10] "selected_content",
+    [11] "genentech_linked_media",
+    [12] "selected_comments",
+    [13] "video",
+    [14] "selected_assets",
+    [15] "radio_input",
+    [16] "checkbox_group",
+    [17] "wysiwyg_textarea",
+    [18] "gamify_badges_summary",
+    [19] "selected_asset.files",
+    [20] "gamify_points_summary",
+    [21] "datetime",
+    [22] "audio",
+    [23] "multi_use_single_line_text_group",
+    [24] "text",
+    [25] "selected_asset.images",
+    [26] "select",
+    [27] "selected_asset.videos",
+    [28] "selected_asset.photos",
+    [29] "multi_use_timestamped_multi_line_text",
+    [30] "poll_position",
+    [31] "selected_asset.audios",
+    [32] "radio",
+    [33] "image",
+    [34] "message",
+    [35] "gamify_badges_chooser",
+    [36] "selected_pages",
+    [37] "textarea"
+]
