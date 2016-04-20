@@ -3,7 +3,7 @@ description: 'Show additional columns in the Listing Framework instances.'
 author_name: 'Dan Wolfgang, uiNNOVATIONS'
 author_link: http://uinnovations.com
 plugin_link: http://github.com/danwolfgang/mt-plugin-more-listing-framework-columns
-version:     1.1.1
+version:     1.2.0
 
 callbacks:
     list_template_param: $MorelistingFrameworkColumns::MoreListingFrameworkColumns::CMS::list_template_param
@@ -13,3 +13,10 @@ list_properties: $MorelistingFrameworkColumns::MoreListingFrameworkColumns::CMS:
 
 system_filters:
     asset: $MorelistingFrameworkColumns::MoreListingFrameworkColumns::Object::Asset::system_filters
+    author:
+        is_sysadmin:
+            label: System administrators
+            order: 100,
+            items:
+                -
+                    type: sysadmins

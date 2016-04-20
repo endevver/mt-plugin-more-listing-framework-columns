@@ -21,6 +21,31 @@ sub list_properties {
             display => 'optional',
             auto    => 1,
         },
+        sysadmins => {
+            label   => 'System administrators',
+            order   => 450,
+            display => 'optional',
+            raw       => sub {
+                return $_[1]->is_superuser
+                            ? MT->translate('System administrator') : '';
+            },
+            bulk_sort => sub {
+                my $prop = shift;
+                my ($objs) = @_;
+                return sort { $b->is_superuser <=> $a->is_superuser } @$objs;
+            },
+            terms => sub {
+                my $prop = shift;
+                my ( $args, $db_terms, $db_args, $opts ) = @_;
+                $db_args->{join} = MT->model('permission')->join_on(
+                    author_id => {
+                        blog_id     => 0,
+                        permissions => { like => "%'administer'%" },
+                    }
+                );
+                return;
+            },
+        },
         preferred_language => {
             label   => 'Preferred Language',
             order   => 1002,
