@@ -202,7 +202,7 @@ sub add_custom_field_columns {
             },
         };
     }
-    
+
 }
 
 # Filter custom fields with the specified text and option. This isn't perfect;
@@ -211,8 +211,8 @@ sub add_custom_field_columns {
 sub filter_custom_field {
     my ($arg_ref) = @_;
     my $option = $arg_ref->{option};
-    my $query  = $arg_ref->{query};
-    my $field  = $arg_ref->{field};
+    my $query  = $arg_ref->{query} // '';
+    my $field  = $arg_ref->{field} // '';
 
     if ( 'equal' eq $option ) {
         return $field =~ /^$query$/;
